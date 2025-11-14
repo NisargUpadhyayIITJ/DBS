@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PF results — Interactive Plot</title>
+  <script src="https://cdn.plot.ly/plotly-2.25.2.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; margin: 18px; }
+    .controls { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+    .control { display:flex; flex-direction:column; min-width:150px; }
+    label { font-weight:600; margin-bottom:6px; }
+    #plots { display:grid; grid-template-columns: 1fr; gap:18px; }
+    .plot { border:1px solid #eee; padding:8px; border-radius:6px; background:#fff; }
+    .small { font-size:0.9em; color:#555; }
+  </style>
+</head>
+<body>
+  <h2>PF results — Interactive plot (Task 1)</h2>
+  <p class="small">Upload a cleaned <code>pf_results.csv</code> (from <code>toydb/output/...</code>) or drag-and-drop below. Then choose policy/pool/metrics to view. Multiple policies/pools may be selected to compare.</p>
+
+  <div class="controls">
+    <div class="control">
+  <label for="csvfile">CSV file(s) (upload, multiple files allowed)</label>
+  <input id="csvfile" type="file" accept="text/csv" multiple />
+  <div class="small" style="margin-top:6px">Tip: you can select multiple CSVs from <code>toydb/output/</code> (hold Ctrl) or drag-and-drop them onto the page.</div>
+    </div>
+
+    <div class="control">
+      <label for="policySelect">Policy (multi-select)</label>
+      <select id="policySelect" multiple size="4"></select>
+    </div>
+
+    <div class="control">
+      <label for="poolSelect">Pool (multi-select)</label>
+      <select id="poolSelect" multiple size="4"></select>
+    </div>
+
+    <div class="control">
+      <label>Metrics</label>
+      <div>
+        <label><input type="checkbox" class="metric" value="logical_reads" checked/> logical_reads</label><br/>
+        <label><input type="checkbox" class="metric" value="logical_writes" checked/> logical_writes</label><br/>
+        <label><input type="checkbox" class="metric" value="phys_reads" checked/> phys_reads</label><br/>
+        <label><input type="checkbox" class="metric" value="phys_writes" checked/> phys_writes</label><br/>
+        <label><input type="checkbox" class="metric" value="hit_rate" checked/> hit_rate</label><br/>
+        <label><input type="checkbox" class="metric" value="miss_rate"/> miss_rate</label>
+      </div>
+    </div>
+
+    <div class="control">
+      <label>X-axis</label>
+      <select id="xaxis">
+        <option value="write_frac">write_frac</option>
+        <option value="ops">ops</option>
+        <option value="pages">pages</option>
+      </select>
+
+      <label style="margin-top:8px">Plot mode</label>
+      <select id="plotMode">
+        <option value="lines+markers">lines+markers</option>
+        <option value="lines">lines</option>
+        <option value="markers">markers</option>
+      </select>
+    </div>
+
+    <div class="control">
+      <label>Actions</label>
+      <button id="downloadPNG">Download current plot as PNG</button>
+      <div style="height:8px"></div>
+      <button id="clear">Clear data</button>
+    </div>
+  </div>
+
+  <div id="status" class="small">No CSV loaded yet.</div>
+  <div id="loadedFiles" class="small" style="margin-top:8px"></div>
+
+  <div id="plots">
+    <div id="plot_main" class="plot" style="height:420px;"></div>
+  </div>
+
+  <script>
+    let rawRows = [];
+    let parsed = [];
+
+    const csvInput = document.getElementById('csvfile');
+    const policySelect = document.getElementById('policySelect');
+    const poolSelect = document.getElementById('poolSelect');
+    const metricsCheckboxes = document.querySelectorAll('.metric');
+    const xaxisSelect = document.getElementById('xaxis');
+    const plotModeSelect = document.getElementById('plotMode');
+    const status = document.getElementById('status');
+    const clearBtn = document.getElementById('clear');
+    const downloadPNG = document.getElementById('downloadPNG');
+
+    function setStatus(s){ status.textContent = s; }
+
+    function resetControls(){
+      policySelect.innerHTML = '';
+      poolSelect.innerHTML = '';
+    }
+
+    csvInput.addEventListener('change', (ev) => {
+      const files = Array.from(ev.target.files || []);
+      if(!files.length) return;
+      setStatus('Parsing ' + files.length + ' CSV file(s)...');
+      parsed = [];
+      rawRows = [];
+      const loadedNames = [];
+      let remaining = files.length;
+      files.forEach(f => {
+        loadedNames.push(f.name);
+        Papa.parse(f, {
+          header:true,
+          skipEmptyLines:true,
+          complete: function(results){
+            rawRows = rawRows.concat(results.data || []);
+            remaining -= 1;
+            if(remaining === 0){
+              // finished parsing all files
+              parsed = rawRows.map(r => normalizeRow(r)).filter(Boolean);
+              setStatus('Loaded ' + parsed.length + ' rows from ' + files.length + ' file(s).');
+              document.getElementById('loadedFiles').textContent = 'Loaded: ' + loadedNames.join(', ');
+              populateControls(parsed);
+              updatePlot();
+            } else {
+              setStatus('Parsing... ' + remaining + ' file(s) remaining');
+            }
+          },
+          error: function(err){
+            remaining -= 1;
+            console.error('CSV parse error', err);
+            if(remaining === 0){
+              parsed = rawRows.map(r => normalizeRow(r)).filter(Boolean);
+              setStatus('Loaded ' + parsed.length + ' rows (with parse errors).');
+              document.getElementById('loadedFiles').textContent = 'Loaded: ' + loadedNames.join(', ');
+              populateControls(parsed);
+              updatePlot();
+            }
+          }
+        });
+      });
+    });
+
+    function normalizeRow(r){
+      // expect columns: policy,pool,ops,pages,write_frac,logical_reads,logical_writes,phys_reads,phys_writes,page_hits,page_misses
+      if(!r.policy) return null;
+      try{
+        return {
+          policy: r.policy.trim(),
+          pool: parseInt(r.pool,10),
+          ops: parseInt(r.ops,10),
+          pages: parseInt(r.pages,10),
+          write_frac: parseFloat(r.write_frac),
+          logical_reads: parseInt(r.logical_reads||0,10),
+          logical_writes: parseInt(r.logical_writes||0,10),
+          phys_reads: parseInt(r.phys_reads||0,10),
+          phys_writes: parseInt(r.phys_writes||0,10),
+          page_hits: parseInt(r.page_hits||0,10),
+          page_misses: parseInt(r.page_misses||0,10)
+        };
+      }catch(e){
+        return null;
+      }
+    }
+
+    function unique(arr){ return Array.from(new Set(arr)); }
+
+    function populateControls(data){
+      resetControls();
+      const policies = unique(data.map(d=>d.policy)).sort();
+      const pools = unique(data.map(d=>d.pool)).sort((a,b)=>a-b);
+      for(const p of policies){
+        const o = document.createElement('option'); o.value = p; o.textContent = p; o.selected = true; policySelect.appendChild(o);
+      }
+      for(const p of pools){
+        const o = document.createElement('option'); o.value = p; o.textContent = p; o.selected = true; poolSelect.appendChild(o);
+      }
+      // attach change listeners
+      policySelect.onchange = updatePlot;
+      poolSelect.onchange = updatePlot;
+      metricsCheckboxes.forEach(cb=>cb.onchange = updatePlot);
+      xaxisSelect.onchange = updatePlot;
+      plotModeSelect.onchange = updatePlot;
+    }
+
+    function getSelectedOptions(selectEl){
+      return Array.from(selectEl.selectedOptions).map(o=>isNaN(o.value)?o.value: (o.value.indexOf(',')>-1?o.value.split(','): (isFinite(o.value)?Number(o.value):o.value)) );
+    }
+
+    function updatePlot(){
+      if(!parsed.length){ setStatus('No data to plot'); return; }
+      const selPolicies = getSelectedOptions(policySelect);
+      const selPools = getSelectedOptions(poolSelect).map(v=>Number(v));
+      const metrics = Array.from(metricsCheckboxes).filter(cb=>cb.checked).map(cb=>cb.value);
+      const xaxis = xaxisSelect.value;
+      const mode = plotModeSelect.value;
+
+      setStatus('Rendering plot...');
+
+      // filter dataset
+      const filtered = parsed.filter(d => selPolicies.includes(d.policy) && selPools.includes(d.pool));
+      if(!filtered.length){ setStatus('No rows match selection'); Plotly.purge('plot_main'); return; }
+
+      // group by policy+pool and plot selected metrics for each
+      const groups = {};
+      filtered.forEach(d=>{
+        const key = d.policy + '|' + d.pool;
+        groups[key] = groups[key] || {policy:d.policy, pool:d.pool, rows:[]};
+        groups[key].rows.push(d);
+      });
+
+      const traces = [];
+      Object.values(groups).forEach(g=>{
+        g.rows.sort((a,b)=>a[xaxis]-b[xaxis]);
+        const xvals = g.rows.map(r=>r[xaxis]);
+        const ops = g.rows[0].ops || 1;
+        metrics.forEach(metric =>{
+          let yvals;
+          if(metric==='hit_rate') yvals = g.rows.map(r=> (r.page_hits/ r.ops));
+          else if(metric==='miss_rate') yvals = g.rows.map(r=> (r.page_misses/ r.ops));
+          else yvals = g.rows.map(r=> r[metric]);
+
+          traces.push({
+            x: xvals,
+            y: yvals,
+            mode: mode,
+            name: `${g.policy} pool=${g.pool} • ${metric}`,
+            hovertemplate: `policy=${g.policy}<br>pool=${g.pool}<br>${xaxis}= %{x}<br>${metric}= %{y}<extra></extra>`
+          });
+        });
+      });
+
+      const layout = {
+        title: `PF results — ${metrics.join(', ')} (x-axis: ${xaxis})`,
+        xaxis: { title: xaxis },
+        yaxis: { title: 'value' },
+        legend: { orientation: 'h' },
+        margin: { t:60 }
+      };
+
+      Plotly.newPlot('plot_main', traces, layout, {responsive:true});
+      setStatus('Rendered ' + traces.length + ' traces.');
+    }
+
+    clearBtn.addEventListener('click', ()=>{
+      rawRows = [];
+      parsed = [];
+      csvInput.value = '';
+      resetControls();
+      Plotly.purge('plot_main');
+      setStatus('Cleared');
+    });
+
+    downloadPNG.addEventListener('click', async ()=>{
+      try{
+        const img = await Plotly.toImage(document.getElementById('plot_main'), {format:'png', height:700, width:1000});
+        const a = document.createElement('a');
+        a.href = img; a.download = 'pf_plot.png';
+        document.body.appendChild(a); a.click(); a.remove();
+      }catch(e){ alert('Could not export PNG: ' + e.message); }
+    });
+
+    // drag/drop support (multiple files allowed)
+    document.addEventListener('dragover', e=>{ e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+    document.addEventListener('drop', (e)=>{
+      e.preventDefault();
+      if(e.dataTransfer.files && e.dataTransfer.files.length) {
+        // create a FileList-like object if necessary
+        csvInput.files = e.dataTransfer.files;
+        const ev = new Event('change');
+        csvInput.dispatchEvent(ev);
+      }
+    });
+
+    // paste CSV text fallback
+    window.addEventListener('paste', (ev)=>{
+      const txt = ev.clipboardData && ev.clipboardData.getData('text');
+      if(!txt) return;
+      // simple heuristic: if it contains 'policy' or 'page_hits' treat as CSV
+      if(txt.indexOf('policy')>-1 || txt.indexOf('page_hits')>-1){
+        setStatus('Parsing pasted CSV text...');
+        const results = Papa.parse(txt, {header:true, skipEmptyLines:true});
+        rawRows = results.data || [];
+        parsed = rawRows.map(r => normalizeRow(r)).filter(Boolean);
+        document.getElementById('loadedFiles').textContent = 'Loaded: pasted-text';
+        populateControls(parsed);
+        updatePlot();
+      }
+    });
+
+  </script>
+</body>
+</html>
