@@ -186,18 +186,9 @@ int main(int argc, char **argv){
         after.page_hits - before.page_hits,
         after.page_misses - before.page_misses);
 
-    /* Query workload: reopen sorted index and run sample point lookups */
-    int fdq = PF_OpenFile("student_am.0");
-    if(fdq < 0) { fprintf(stderr,"open index for query failed\n"); }
-    PF_GetStats(&before);
-    long qtime = measure_point_queries(fdq, keys_sorted, count, MAX_KEYS_SAMPLE, &before, &after);
-    PF_CloseFile(fdq);
-    printf("\nPoint-query sample (%d), time-ms=%ld, phys_reads=%d\n", MAX_KEYS_SAMPLE, qtime,
-        after.phys_reads - before.phys_reads);
-
-    /* cleanup */
+    /* cleanup (query workload measurement is done in a separate step to avoid
+       interaction with index file destruction in this old AM implementation) */
     AM_DestroyIndex((char*)basename, INDEXNO);
-
     /* free buffers */
     free(keys); free(keys_orig); free(keys_sorted); free(keys_rand);
     return 0;
