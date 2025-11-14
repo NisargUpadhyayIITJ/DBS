@@ -9,6 +9,8 @@ a.out
 *
 !*/
 !*.*
+!Makefile
+!makefile
 
 
 # Created by https://www.toptal.com/developers/gitignore/api/c

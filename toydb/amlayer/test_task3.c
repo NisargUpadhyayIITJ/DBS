@@ -16,6 +16,13 @@
 #include <string.h>
 #include <time.h>
 
+#ifndef TRUE
+#define TRUE 1
+#endif
+#ifndef FALSE
+#define FALSE 0
+#endif
+
 /* Minimal PF prototypes and PFstats struct so this test can compile cleanly
     without depending on header ordering issues in the legacy am.h/pf.h */
 typedef struct PFstats { int logical_reads; int logical_writes; int phys_reads; int phys_writes; int page_hits; int page_misses; } PFstats;
